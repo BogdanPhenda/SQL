@@ -1,0 +1,144 @@
+-- миграция новых данных в norm_data.norm_blocks
+
+query = 
+insert into  norm_data.norm_blocks 
+             (timestamp, guid,name,description,developer,city,district,lon,lat,advantages,building_types,
+              address,parkings,images,files,subways,block_plans,currency,
+              complex_class,country,block_uuid)
+select '2050-01-01', null,name,description,builder,null,district,longitude::double precision,latitude::double precision,
+       null,material,address,parking,images,files_json,metro_json,null,'RUB',class,'Россия',redcat_uuid
+from fids_raw_data.blocks
+WHERE redcat_uuid NOT IN (SELECT block_uuid FROM norm_data.norm_blocks);
+
+
+-- добавление городов в поле city
+
+query = 
+SELECT a.address, cn.name AS city
+FROM fids_raw_data.blocks AS a
+CROSS JOIN demo_dict.cities AS cn
+WHERE POSITION(cn.name IN a.address) > 0;
+
+UPDATE norm_data.norm_blocks AS nb
+SET city = cn.name
+FROM fids_raw_data.blocks AS a
+JOIN demo_dict.cities AS cn ON POSITION(cn.name IN a.address) > 0
+WHERE nb.block_uuid = a.redcat_uuid AND nb.timestamp = '2050-01-01';
+
+
+-- добавление region_uuid
+
+query =
+update norm_data.norm_blocks nn 
+set
+region_uuid = dr.region_uuid 
+from demo_dict.cities dr
+where nn.city = dr.name AND timestamp = '2050-01-01';
+
+
+-- Складываем в массив тип строительства и паркинги.
+-- Создаем временную таблицу, если она еще не существует
+
+query = 
+CREATE TEMP TABLE IF NOT EXISTS temp_material AS
+SELECT
+    nb.block_uuid,
+    unnest(string_to_array(tc.material, ', ')) AS material,
+    unnest(string_to_array(tc.parking, ', ')) AS parking
+FROM
+    norm_data.norm_blocks nb
+JOIN
+    fids_raw_data.blocks tc ON nb.block_uuid = tc.redcat_uuid;
+
+-- Обновляем поле  в основной таблице
+
+query = 
+UPDATE norm_data.norm_blocks nb
+set 
+    building_types = ARRAY(
+        SELECT ct.name
+        FROM norm_data.building_types ct 
+        WHERE ct.name_fids = ANY(string_to_array(tc.material, ', '))
+    ),
+    parkings = ARRAY(
+        SELECT pt.name
+        FROM norm_data.parking_types pt 
+        WHERE pt.name_fids = ANY(string_to_array(tc.parking, ','))
+    )
+FROM
+    temp_material tf
+JOIN
+    fids_raw_data.blocks tc ON block_uuid = tc.redcat_uuid  
+WHERE
+    nb.block_uuid = tf.block_uuid and timestamp = '2050-01-01';
+
+
+-- добавляем данные по deadline and lift
+-- Обновляем поле deadline в таблице norm_data.norm_blocks
+
+query = 
+UPDATE norm_data.norm_blocks nb
+SET deadline = (
+    SELECT MAX(nbs.deadline)
+    FROM norm_data.norm_buildings nbs
+    WHERE nb.block_uuid = nbs.block_uuid
+)
+WHERE EXISTS (
+    SELECT 1
+    FROM norm_data.norm_buildings nbs
+    WHERE nb.block_uuid = nbs.block_uuid
+);
+
+
+
+-- Обновляем поле elevators в таблице norm_data.norm_blocks
+
+query = 
+UPDATE norm_data.norm_blocks AS nb
+SET elevators = CASE
+    WHEN a.lifts_passenger IS NOT NULL AND a.lifts_cargo IS NOT NULL THEN 'Пассажирский и грузовой'
+    WHEN a.lifts_passenger IS NOT NULL THEN 'Пассажирский'
+    WHEN a.lifts_cargo IS NOT NULL THEN 'Грузовой'
+    ELSE NULL
+END
+FROM (
+    SELECT DISTINCT ON (block_uuid) block_uuid, lifts_passenger, lifts_cargo
+    FROM fids_raw_data.buildings
+) AS a
+WHERE nb.block_uuid = a.block_uuid  and nb.timestamp = '2050-01-01';
+
+
+
+-- добавление данных в prod.blocks_mart
+
+query = 
+insert into prod.blocks_mart(timestamp,online,name,description,developer,city,district,
+                             lon,lat,advantages,building_types,facade_types,elevators,contracts,payments,deadline,address,
+                             parkings,buildings,images,files,subways,block_plans,currency,complex_class,
+                             block_uuid, region_uuid, developer_uuid) 
+select '2050-01-01',false, name, description, developer, city, district, lon, lat, advantages, building_types, facade_types,
+       elevators, contracts, payments, deadline, address, parkings, buildings, images, files, subways, 
+       block_plans, currency, complex_class, block_uuid, region_uuid, developer_uuid
+FROM norm_data.norm_blocks nb
+where nb.block_uuid  NOT IN (SELECT block_uuid FROM prod.blocks_mart);
+
+--обновление данных в prod.blocks_mart
+
+
+query =
+update prod.blocks_mart 
+set
+    city_uuid = demo_dict.cities.uuid,
+    countries_uuid = demo_dict.countries.uuid,
+    complex_class_uuid = demo_dict.complex_classes.uuid,
+    finance_currencies_uuid = demo_dict.finance_currencies.uuid,
+    district_uuid = demo_dict.district.uuid,
+    developer_uuid = demo_dict.blocks_main.uuid_developer
+FROM norm_data.norm_blocks 
+LEFT JOIN demo_dict.cities ON demo_dict.cities.name = norm_data.norm_blocks.city -- добавлено
+LEFT JOIN demo_dict.countries  ON demo_dict.countries.name = norm_data.norm_blocks.country -- добавлено
+LEFT JOIN demo_dict.complex_classes ON demo_dict.complex_classes.name = norm_data.norm_blocks.complex_class 
+LEFT JOIN demo_dict.finance_currencies ON demo_dict.finance_currencies.id = norm_data.norm_blocks.currency 
+LEFT JOIN demo_dict.district  ON demo_dict.district.name = norm_data.norm_blocks.district -- добавлено
+LEFT JOIN demo_dict.blocks_main  ON demo_dict.blocks_main.uuid = norm_data.norm_blocks.block_uuid -- добавлено
+WHERE prod.blocks_mart.block_uuid = norm_data.norm_blocks.block_uuid;
