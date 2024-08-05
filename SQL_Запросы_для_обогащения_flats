@@ -1,0 +1,39 @@
+-- обогащение по номеру квартиры
+
+WITH numbered_tt_flats AS (
+  SELECT tf.uuid, tf.building_uuid, tf.floor, tf.area_total, tf.area_kitchen, tf.number,
+         ROW_NUMBER() OVER(PARTITION BY tf.uuid ORDER BY tf.uuid) as rn
+  FROM fids_raw_data.flats tf
+)
+UPDATE trend_raw_data.flats trf
+SET cat_flats_uuid = ntf.uuid
+FROM numbered_tt_flats ntf
+WHERE ntf.building_uuid = trf.cat_blocks_uuid
+AND CAST(SPLIT_PART(trf.floor, '/', 1) AS INTEGER) = CAST(ntf.floor AS INTEGER)
+AND ntf.number = trf.number
+AND ntf.rn = 1;
+
+
+-- обогащение по сборным признакам
+
+WITH numbered_tt_flats AS (
+  SELECT tf.uuid, tf.building_uuid, tf.floor, ROUND(CAST(tf.area_total AS NUMERIC), 2) AS area_total, ROUND(CAST(tf.area_kitchen AS NUMERIC), 2) AS area_kitchen,
+         ROW_NUMBER() OVER(PARTITION BY tf.uuid ORDER BY tf.uuid) as rn
+  FROM dev.tt_flats tf
+)
+UPDATE trend_raw_data.flats trf
+SET cat_flats_uuid = ntf.uuid
+FROM numbered_tt_flats ntf
+WHERE ntf.building_uuid = trf.cat_blocks_uuid
+AND CAST(SPLIT_PART(TRIM(trf.floor), '/', 1) AS INTEGER) = CAST(TRIM(ntf.floor) AS INTEGER)
+AND ABS(ROUND(CAST(ntf.area_total AS NUMERIC), 2) - ROUND(CAST(trf.area_total AS NUMERIC), 2)) <= 1
+AND ABS(ROUND(CAST(ntf.area_kitchen AS NUMERIC), 2) - ROUND(CAST(trf.area_kitchen AS NUMERIC), 2)) <= 5
+AND ntf.rn = 1;
+
+-- обновляем данные используя uuid - квартир
+
+update dev.tt_flats df
+set 
+section = tf.section_name 
+from trend_raw_data.flats tf
+where df.uuid = tf.cat_flats_uuid;
