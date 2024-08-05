@@ -1,5 +1,6 @@
 -- Добавление отсутствующих строк norm_data.norm_buildings
 
+query =
 INSERT INTO norm_data.norm_buildings (
     building_name, building_full_name, deadline, building_uuid, block_uuid,
     floor_in_house, elevator)
@@ -28,6 +29,7 @@ and uuid not in (
 
 -- считаем кол-во квартир для каждого корпуса
 
+query =
 UPDATE norm_data.norm_buildings
 SET apartment_count = (
   SELECT CASE WHEN COUNT(*) = 0 THEN NULL ELSE COUNT(*) END
@@ -40,7 +42,7 @@ SET apartment_count = (
 -- Добавляем данные о паркинге из таблицы fids_raw_data.blocks
 -- Создаем временную таблицу, если она еще не существует
 
-
+query =
 CREATE TEMP TABLE IF NOT EXISTS temp_finishings AS
 SELECT
     nb.block_uuid,
@@ -53,7 +55,7 @@ JOIN
 
 -- Обновляем поле parking  в norm_data.norm_buildings
 
-
+query =
 UPDATE norm_data.norm_buildings nb
 set
     parking = ARRAY(
@@ -72,6 +74,7 @@ WHERE
    
 -- обновление данных в norm_data.norm_buildings, добавление UUID
 
+query =
 UPDATE norm_data.norm_buildings nb
 SET 
     elevator_uuid = 
