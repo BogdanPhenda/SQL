@@ -1,0 +1,85 @@
+-- Добавление отсутствующих строк norm_data.norm_buildings
+
+INSERT INTO norm_data.norm_buildings (
+    building_name, building_full_name, deadline, building_uuid, block_uuid,
+    floor_in_house, elevator)
+SELECT 
+    number, -- номер корпуса
+    name, -- полное название корпуса
+    deadline::date, --дата сдачи
+    uuid, -- uuid корпуса
+    block_uuid, -- uuid ЖК
+    floors, -- кол-во этажей в корпусе
+    CASE
+        WHEN lifts_passenger IS NOT NULL AND lifts_cargo IS NOT NULL THEN 'Пассажирский и грузовой'
+        WHEN lifts_passenger IS NOT NULL THEN 'Пассажирский'
+        WHEN lifts_cargo IS NOT NULL THEN 'Грузовой'
+        ELSE NULL
+    END    -- данные о лифтах
+FROM fids_raw_data.buildings
+WHERE uuid NOT IN (SELECT building_uuid FROM norm_data.norm_buildings) 
+and block_uuid not in (
+ 'c1892542-1f19-4216-8145-58593ce81da4',
+ '0b750e6f-8cfc-4355-b965-01de7b97d566') 
+and uuid not in (
+'aa137642-9270-476d-9d3f-626845be1437',
+'1003b62d-be66-4b6a-bbd0-1fb85d63e7f6');
+
+
+-- считаем кол-во квартир для каждого корпуса
+
+UPDATE norm_data.norm_buildings
+SET apartment_count = (
+  SELECT CASE WHEN COUNT(*) = 0 THEN NULL ELSE COUNT(*) END
+  FROM fids_raw_data.flats 
+  WHERE fids_raw_data.flats.building_uuid = norm_data.norm_buildings.building_uuid
+);
+
+
+
+-- Добавляем данные о паркинге из таблицы fids_raw_data.blocks
+-- Создаем временную таблицу, если она еще не существует
+
+
+CREATE TEMP TABLE IF NOT EXISTS temp_finishings AS
+SELECT
+    nb.block_uuid,
+    unnest(string_to_array(tc.parking, ',')) AS parking
+FROM
+    norm_data.norm_blocks nb
+JOIN
+    fids_raw_data.blocks tc ON nb.block_uuid = tc.redcat_uuid;
+
+
+-- Обновляем поле parking  в norm_data.norm_buildings
+
+
+UPDATE norm_data.norm_buildings nb
+set
+    parking = ARRAY(
+        SELECT pt.name
+        FROM norm_data.parking_types pt 
+        WHERE pt.name_fids = ANY(string_to_array(tc.parking, ','))
+    )
+FROM
+    temp_finishings tf
+JOIN
+    fids_raw_data.blocks tc ON block_uuid = tc.redcat_uuid
+WHERE
+    nb.block_uuid = tf.block_uuid;
+    
+
+   
+-- обновление данных в norm_data.norm_buildings, добавление UUID
+
+UPDATE norm_data.norm_buildings nb
+SET 
+    elevator_uuid = 
+                   (SELECT et.uuid 
+                    FROM demo_dict.elevator_types et 
+                    WHERE nb.elevator = et.name),
+     parking_uuid = 
+                   (SELECT jsonb_agg(pt.uuid::uuid)  
+                    FROM demo_dict.parking_types pt, 
+                    unnest(nb.parking::text[]) as item
+                    WHERE item = pt.name);  
